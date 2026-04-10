@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Rounded square background -->
+  <rect width="32" height="32" rx="8" fill="#1570EF"/>
+  <!-- Stylized "A" letterform -->
+  <path d="M16 6L7 26H11.5L13 22H19L20.5 26H25L16 6Z M14 19L16 13L18 19H14Z" fill="white"/>
+  <!-- AI dot accent -->
+  <circle cx="24" cy="8" r="3" fill="#7C3AED"/>
+</svg>

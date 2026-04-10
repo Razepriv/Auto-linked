@@ -1,0 +1,39 @@
+{
+  "id": "0000",
+  "prevId": "",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.users": {
+      "name": "users",
+      "schema": "",
+      "columns": {}
+    },
+    "public.linkedin_oauth_tokens": {
+      "name": "linkedin_oauth_tokens",
+      "schema": "",
+      "columns": {}
+    },
+    "public.voice_profiles": {
+      "name": "voice_profiles",
+      "schema": "",
+      "columns": {}
+    },
+    "public.content_pillars": {
+      "name": "content_pillars",
+      "schema": "",
+      "columns": {}
+    },
+    "public.posts": {
+      "name": "posts",
+      "schema": "",
+      "columns": {}
+    },
+    "public.post_analytics": {
+      "name": "post_analytics",
+      "schema": "",
+      "columns": {}
+    }
+  },
+  "enums": {}
+}
