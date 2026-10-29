@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { eq, and, isNull, desc, asc, sql } from 'drizzle-orm';
+import { eq, and, isNull, desc, asc, sql, gte, lte, isNotNull, or } from 'drizzle-orm';
 import { router, protectedProcedure } from '../trpc.js';
 import { posts } from '../../db/schema/posts.js';
 import { contentPillars } from '../../db/schema/content-pillars.js';
@@ -121,6 +121,60 @@ export const postsRouter = router({
         total,
         hasMore: input.cursor + input.limit < total,
       };
+    }),
+
+  /**
+   * List scheduled + published posts within a date window, for the calendar view.
+   *
+   * Returns minimal fields: id, hook/title, content preview, status, scheduledAt,
+   * publishedAt, pillarName, pillarColor.
+   */
+  calendar: protectedProcedure
+    .input(
+      z.object({
+        from: z.string().datetime(),
+        to: z.string().datetime(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const from = new Date(input.from);
+      const to = new Date(input.to);
+
+      const rows = await ctx.db
+        .select({
+          id: posts.publicId,
+          content: posts.content,
+          hook: posts.hook,
+          status: posts.status,
+          format: posts.format,
+          scheduledAt: posts.scheduledAt,
+          publishedAt: posts.publishedAt,
+          pillarName: contentPillars.name,
+          pillarColor: contentPillars.color,
+        })
+        .from(posts)
+        .leftJoin(contentPillars, eq(posts.pillarId, contentPillars.id))
+        .where(
+          and(
+            eq(posts.userId, ctx.user.id),
+            isNull(posts.deletedAt),
+            or(
+              and(
+                isNotNull(posts.scheduledAt),
+                gte(posts.scheduledAt, from),
+                lte(posts.scheduledAt, to),
+              ),
+              and(
+                isNotNull(posts.publishedAt),
+                gte(posts.publishedAt, from),
+                lte(posts.publishedAt, to),
+              ),
+            ),
+          ),
+        )
+        .orderBy(asc(posts.scheduledAt));
+
+      return { items: rows };
     }),
 
   /**

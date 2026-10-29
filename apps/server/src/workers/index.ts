@@ -6,7 +6,11 @@ import { db } from '../db/client.js';
 import { publishPost } from '../modules/publish/linkedin-publisher.js';
 import { generateBatch, regeneratePost } from '../modules/content/index.js';
 import { analyzeVoice } from '../modules/voice/index.js';
+import { refreshAnalytics } from '../modules/analytics/index.js';
+import { refreshLinkedInTokens } from '../modules/auth/refresh-linkedin-tokens.js';
 import { voiceProfiles } from '../db/schema/voice-profiles.js';
+import { linkedinOauthTokens } from '../db/schema/oauth-tokens.js';
+import { gt } from 'drizzle-orm';
 
 // -- Queue Names --
 
@@ -251,13 +255,41 @@ export function registerWorkers(connection: Redis): Worker[] {
     QUEUE_NAMES.FETCH_ANALYTICS,
     async (job) => {
       const workerLogger = logger.child({ worker: QUEUE_NAMES.FETCH_ANALYTICS, jobId: job.id });
-      workerLogger.info({ data: job.data }, 'Processing fetch-analytics job');
-      // TODO: implement
-      // 1. Fetch published posts needing analytics refresh
-      // 2. Call LinkedIn Analytics API per post
-      // 3. Insert post_analytics snapshot rows
-      // 4. Calculate engagement_rate
-      // 5. Update content_pillars.performance_score
+      workerLogger.info({ name: job.name, data: job.data }, 'Processing fetch-analytics job');
+
+      // Job payload shapes:
+      //   refresh-user: { userId: number }
+      //   refresh-post: { userId: number, postId: number }
+      //   refresh-all:  {} — sweep all users with active tokens
+      if (job.name === 'refresh-all') {
+        // Sweep every user with an unexpired LinkedIn token.
+        const users = await db
+          .select({ userId: linkedinOauthTokens.userId })
+          .from(linkedinOauthTokens)
+          .where(gt(linkedinOauthTokens.expiresAt, new Date()));
+        let totalRefreshed = 0;
+        for (const { userId } of users) {
+          const result = await refreshAnalytics(db, { userId });
+          totalRefreshed += result.snapshotsInserted;
+        }
+        return { userCount: users.length, snapshotsInserted: totalRefreshed };
+      }
+
+      const { userId, postId } = job.data as { userId: number; postId?: number };
+      if (typeof userId !== 'number') {
+        throw new Error('fetch-analytics: userId missing from job data');
+      }
+
+      await job.updateProgress({ stage: 'fetching' });
+      const result = await refreshAnalytics(db, postId !== undefined ? { userId, postId } : { userId });
+      await job.updateProgress({ stage: 'complete' });
+
+      workerLogger.info(
+        { postsRefreshed: result.postsRefreshed, snapshots: result.snapshotsInserted, errors: result.errors.length },
+        'Analytics refresh finished',
+      );
+
+      return result;
     },
     {
       connection,
@@ -272,13 +304,33 @@ export function registerWorkers(connection: Redis): Worker[] {
     QUEUE_NAMES.REFRESH_TOKENS,
     async (job) => {
       const workerLogger = logger.child({ worker: QUEUE_NAMES.REFRESH_TOKENS, jobId: job.id });
-      workerLogger.info({ data: job.data }, 'Processing refresh-tokens job');
-      // TODO: implement
-      // 1. Find tokens expiring within 24 hours
-      // 2. Decrypt refresh token
-      // 3. Call LinkedIn token refresh endpoint
-      // 4. Encrypt new tokens and update DB
-      // 5. On failure, increment refresh_failure_count and alert
+      workerLogger.info({ name: job.name, data: job.data }, 'Processing refresh-tokens job');
+
+      // Job payload shapes:
+      //   refresh-all:   {} — sweep all tokens expiring within 24h
+      //   refresh-user:  { userId: number } — refresh a specific user's token
+      if (job.name === 'refresh-user') {
+        const { userId } = job.data as { userId: number };
+        if (typeof userId !== 'number') {
+          throw new Error('refresh-user: userId missing from job data');
+        }
+        await job.updateProgress({ stage: 'refreshing' });
+        const result = await refreshLinkedInTokens(db, { userId });
+        await job.updateProgress({ stage: 'complete' });
+        return result;
+      }
+
+      // Default: refresh-all
+      await job.updateProgress({ stage: 'refreshing' });
+      const result = await refreshLinkedInTokens(db);
+      await job.updateProgress({ stage: 'complete' });
+
+      workerLogger.info(
+        { checked: result.checked, refreshed: result.refreshed, failed: result.failed },
+        'Token refresh sweep finished',
+      );
+
+      return result;
     },
     {
       connection,
@@ -312,6 +364,48 @@ export function registerWorkers(connection: Redis): Worker[] {
   );
 
   return workers;
+}
+
+/**
+ * Register repeatable (cron-like) jobs for background maintenance work.
+ *
+ * - fetch-analytics `refresh-all` — every hour, fetch LinkedIn analytics for
+ *   every user with an active token.
+ * - refresh-tokens  `refresh-all` — every 6 hours, refresh any LinkedIn OAuth
+ *   token that expires within the next 24 hours.
+ *
+ * BullMQ dedupes repeatable jobs by key, so calling this on every boot is safe.
+ */
+export async function registerRepeatableJobs(connection: Redis): Promise<void> {
+  const analyticsQueue = getQueue(QUEUE_NAMES.FETCH_ANALYTICS, connection);
+  const tokensQueue = getQueue(QUEUE_NAMES.REFRESH_TOKENS, connection);
+
+  await analyticsQueue.add(
+    'refresh-all',
+    {},
+    {
+      repeat: { pattern: '0 * * * *' }, // top of every hour
+      jobId: 'analytics-refresh-all',
+      removeOnComplete: { count: 50 },
+      removeOnFail: { count: 50 },
+    },
+  );
+
+  await tokensQueue.add(
+    'refresh-all',
+    {},
+    {
+      repeat: { pattern: '0 */6 * * *' }, // every 6 hours
+      jobId: 'tokens-refresh-all',
+      removeOnComplete: { count: 50 },
+      removeOnFail: { count: 50 },
+    },
+  );
+
+  logger.info(
+    { jobs: ['analytics-refresh-all', 'tokens-refresh-all'] },
+    'Repeatable jobs registered',
+  );
 }
 
 export async function closeQueues(): Promise<void> {

@@ -67,11 +67,34 @@ async function getUserFromRequest(
     .where(eq(users.email, userEmail))
     .limit(1);
 
-  if (result.length === 0) {
-    return null;
+  if (result.length > 0) {
+    return result[0] ?? null;
   }
 
-  return result[0] ?? null;
+  // Auto-provision the user row from the trusted proxy headers on first
+  // authenticated request. NextAuth uses a JWT session strategy with no
+  // DrizzleAdapter wired up, so this is where the users table gets
+  // populated after a successful LinkedIn sign-in.
+  const userName =
+    (req.headers['x-user-name'] as string | undefined) ??
+    userEmail.split('@')[0] ??
+    userEmail;
+
+  const [inserted] = await db
+    .insert(users)
+    .values({
+      email: userEmail,
+      name: userName,
+    })
+    .returning({
+      id: users.id,
+      publicId: users.publicId,
+      email: users.email,
+      name: users.name,
+      subscriptionTier: users.subscriptionTier,
+    });
+
+  return inserted ?? null;
 }
 
 export async function createContext(

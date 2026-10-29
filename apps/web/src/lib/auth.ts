@@ -49,7 +49,7 @@ export const authConfig: NextAuthConfig = {
   },
 
   callbacks: {
-    async jwt({ token, user, account, trigger }) {
+    async jwt({ token, user, account, profile, trigger }) {
       // On initial sign-in, attach user data to the JWT
       if (user) {
         token.id = user.id;
@@ -58,9 +58,68 @@ export const authConfig: NextAuthConfig = {
         token.image = user.image;
       }
 
-      // If LinkedIn account was just linked, store the LinkedIn sub
-      if (account?.provider === "linkedin") {
+      // If LinkedIn account was just linked, sync identity + encrypted tokens
+      // to the Express backend so publishing can use them without requiring
+      // a separate "Connect LinkedIn" click on the profile page.
+      if (account?.provider === "linkedin" && account.access_token) {
         token.linkedinConnected = true;
+
+        const email =
+          (token.email as string | undefined) ??
+          (user?.email as string | undefined) ??
+          null;
+        const linkedinSub =
+          (account.providerAccountId as string | undefined) ??
+          ((profile as { sub?: string } | undefined)?.sub ?? null);
+
+        if (email && linkedinSub) {
+          const picture =
+            (profile as { picture?: string } | undefined)?.picture ??
+            (token.image as string | undefined) ??
+            null;
+          const name =
+            (token.name as string | undefined) ??
+            (user?.name as string | undefined) ??
+            email;
+
+          // Fire-and-forget: don't block the auth flow if the backend is slow.
+          const backendUrl =
+            process.env.BACKEND_URL ?? "http://localhost:4000";
+          const proxySecret =
+            process.env.PROXY_SECRET ?? "dev-proxy-secret";
+
+          void fetch(`${backendUrl}/internal/linkedin-sync`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-proxy-secret": proxySecret,
+            },
+            body: JSON.stringify({
+              email,
+              name,
+              linkedinSub,
+              picture,
+              accessToken: account.access_token,
+              refreshToken: account.refresh_token ?? null,
+              expiresIn:
+                typeof account.expires_in === "number"
+                  ? account.expires_in
+                  : 3600,
+              refreshExpiresIn:
+                typeof (account as { refresh_token_expires_in?: number })
+                  .refresh_token_expires_in === "number"
+                  ? (account as { refresh_token_expires_in?: number })
+                      .refresh_token_expires_in
+                  : null,
+              scope: account.scope ?? "",
+            }),
+          }).catch((err: unknown) => {
+            console.error(
+              "[auth] linkedin-sync failed:",
+              err instanceof Error ? err.message : err,
+            );
+          });
+        }
       }
 
       // On update trigger (e.g., after onboarding), refresh token data

@@ -134,6 +134,48 @@ export const voiceRouter = router({
     }),
 
   /**
+   * Import raw LinkedIn post samples (pasted text or parsed CSV rows) and
+   * immediately kick off the voice-analysis worker. This lets users refresh
+   * their voice profile from the settings page without re-running onboarding.
+   *
+   * Samples are stored in Redis at the same key the analyze-voice worker
+   * reads from (`onboarding:posts:${userId}`), so the existing pipeline can
+   * consume them unchanged.
+   */
+  importSamples: protectedProcedure
+    .input(
+      z.object({
+        posts: z
+          .array(
+            z.object({
+              text: z.string().min(1),
+              date: z.string().nullable(),
+            }),
+          )
+          .min(1)
+          .max(200),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const redisKey = `onboarding:posts:${ctx.user.id}`;
+      await ctx.redis.set(
+        redisKey,
+        JSON.stringify(input.posts),
+        'EX',
+        60 * 60 * 24, // keep for 24h so re-analysis can reuse them
+      );
+
+      const queue = getQueue(QUEUE_NAMES.ANALYZE_VOICE, ctx.redis);
+      const job = await queue.add('analyze-voice', {
+        userId: ctx.user.id,
+        userPublicId: ctx.user.publicId,
+        source: 'linkedin_history',
+      });
+
+      return { jobId: job.id, postCount: input.posts.length };
+    }),
+
+  /**
    * Trigger a re-analysis of the user's voice.
    * Returns a job ID to poll for status.
    */

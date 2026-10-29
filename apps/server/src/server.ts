@@ -8,7 +8,7 @@ import { getRedis, closeRedis } from './lib/redis.js';
 import { db, closeDb } from './db/client.js';
 import { appRouter } from './trpc/routers/index.js';
 import { createContext, setContextDeps } from './trpc/context.js';
-import { registerWorkers, closeQueues } from './workers/index.js';
+import { registerWorkers, registerRepeatableJobs, closeQueues } from './workers/index.js';
 import { createHelmetMiddleware, createCorsMiddleware } from './middleware/security.js';
 import { createGlobalLimiter, createAuthLimiter, createApiLimiter } from './middleware/rate-limiter.js';
 import { createRequestLogger } from './middleware/request-logger.js';
@@ -16,6 +16,7 @@ import { createErrorHandler } from './middleware/error-handler.js';
 import { registerShutdownHandlers } from './lib/shutdown.js';
 import { createHealthRouter } from './routes/health.js';
 import { createBullBoardRouter } from './routes/bull-board.js';
+import { createInternalRouter } from './routes/internal.js';
 import { handleStripeWebhook } from './modules/billing/index.js';
 
 // -- Express App --
@@ -62,6 +63,10 @@ app.use(createHealthRouter({ db, redis }));
 // -- BullMQ Dashboard --
 
 app.use(createBullBoardRouter(redis));
+
+// -- Internal routes (proxy-secret authenticated; not for public traffic) --
+
+app.use(createInternalRouter({ db, redis }));
 
 // -- Webhook Routes --
 
@@ -159,6 +164,13 @@ const server = app.listen(config.PORT, () => {
 // -- Register BullMQ Workers --
 
 const workers = registerWorkers(redis);
+
+// -- Register repeatable maintenance jobs (analytics refresh, token refresh) --
+
+await registerRepeatableJobs(redis).catch((err: unknown) => {
+  const message = err instanceof Error ? err.message : String(err);
+  logger.error({ error: message }, 'Failed to register repeatable jobs');
+});
 
 // -- Graceful Shutdown (10s grace period) --
 

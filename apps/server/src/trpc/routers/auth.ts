@@ -46,16 +46,65 @@ export const authRouter = router({
 
   /**
    * Get the currently authenticated user's profile.
+   * Reads the live row from the DB (not the cached JWT context) so that
+   * edits made via updateProfile or the LinkedIn OAuth callback show up
+   * immediately.
    */
   me: protectedProcedure.query(async ({ ctx }) => {
-    // TODO: fetch full user profile from DB using ctx.user.id
+    const [row] = await ctx.db
+      .select({
+        id: users.publicId,
+        email: users.email,
+        name: users.name,
+        avatarUrl: users.avatarUrl,
+        linkedinId: users.linkedinId,
+        linkedinVanityUrl: users.linkedinVanityUrl,
+        timezone: users.timezone,
+        subscriptionTier: users.subscriptionTier,
+        onboardingCompletedAt: users.onboardingCompletedAt,
+        createdAt: users.createdAt,
+      })
+      .from(users)
+      .where(eq(users.id, ctx.user.id))
+      .limit(1);
+
+    if (!row) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: 'User profile not found.',
+      });
+    }
+
     return {
-      id: ctx.user.publicId,
-      email: ctx.user.email,
-      name: ctx.user.name,
-      subscriptionTier: ctx.user.subscriptionTier,
+      ...row,
+      linkedinConnected: row.linkedinId !== null,
     };
   }),
+
+  /**
+   * Update the current user's editable profile fields.
+   * LinkedIn-sourced identity (linkedinId, avatarUrl) is intentionally
+   * excluded — those only change via the OAuth callback.
+   */
+  updateProfile: protectedProcedure
+    .input(
+      z.object({
+        name: z.string().min(1).max(200).optional(),
+        timezone: z.string().min(1).max(64).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const update: Record<string, unknown> = { updatedAt: new Date() };
+      if (input.name !== undefined) update['name'] = input.name;
+      if (input.timezone !== undefined) update['timezone'] = input.timezone;
+
+      await ctx.db
+        .update(users)
+        .set(update)
+        .where(eq(users.id, ctx.user.id));
+
+      return { success: true };
+    }),
 
   /**
    * Initiate LinkedIn OAuth connection.
@@ -204,12 +253,13 @@ export const authRouter = router({
         });
       }
 
-      // Step 6: Update user record with LinkedIn identity
+      // Step 6: Update user record with LinkedIn identity.
+      // Note: LinkedIn's OIDC /userinfo endpoint does not return a vanity URL
+      // or headline, so those columns are left untouched here.
       await ctx.db
         .update(users)
         .set({
           linkedinId: profile.sub,
-          linkedinVanityUrl: profile.name,
           name: profile.name || undefined,
           avatarUrl: profile.picture || undefined,
           updatedAt: new Date(),

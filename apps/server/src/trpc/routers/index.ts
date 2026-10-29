@@ -7,6 +7,7 @@ import { reviewRouter } from './review.js';
 import { analyticsRouter } from './analytics.js';
 import { billingRouter } from './billing.js';
 import { onboardingRouter } from './onboarding.js';
+import { settingsRouter } from './settings.js';
 
 export const appRouter = router({
   auth: authRouter,
@@ -17,6 +18,7 @@ export const appRouter = router({
   analytics: analyticsRouter,
   billing: billingRouter,
   onboarding: onboardingRouter,
+  settings: settingsRouter,
 });
 
 export type AppRouter = typeof appRouter;

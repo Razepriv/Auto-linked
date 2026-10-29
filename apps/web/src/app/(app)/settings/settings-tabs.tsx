@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 
 const TABS: { label: string; href: Route }[] = [
   { label: "Profile", href: "/settings/profile" as Route },
+  { label: "Voice & Style", href: "/settings/voice" as Route },
   { label: "Content Pillars", href: "/settings/pillars" as Route },
   { label: "Schedule", href: "/settings/schedule" as Route },
   { label: "Billing", href: "/settings/billing" as Route },
